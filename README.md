@@ -27,7 +27,14 @@ Currently supported data conversions:
 2. Install the required dependencies (a virtual env is suggested):
 
    ```sh
+   python -m venv .venv
+   source .venv/bin/activate
    pip install -r requirements.txt   
+   ```
+
+   Alternatively, use uv:
+   ```sh
+   uv sync
    ```
 
 ## Usage
@@ -50,7 +57,7 @@ python visualize.py --scene-root /path/to/converted/data
 
 Future development plans include support for:
 
-- [ ] radar 
+- [ ] radar
 - [ ] map conversion
 - [ ] ego pose transformation
 - [ ] Calibration
