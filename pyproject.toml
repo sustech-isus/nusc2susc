@@ -1,0 +1,17 @@
+[project]
+name = "nusc2susc"
+version = "0.1.0"
+description = "Convert [nuscenes](https://github.com/nutonomy/nuscenes-devkit) dataset to [SUSCape](https://suscape.net) dataset format"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy<2",
+    "nuscenes-devkit>=1.1.11",
+    "pillow>=11.0.0",
+    "pydantic>=2.9.2",
+    "pypcd4>=1.1.0",
+    "pyquaternion>=0.9.9",
+    "rerun-sdk>=0.12.0",
+    "scipy>=1.14.1",
+    "tyro>=0.8.14",
+]
