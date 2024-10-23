@@ -63,7 +63,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - [nuScenes](https://www.nuscenes.org/) for providing the original dataset
 - [SUSCape](https://suscape.net) for the target dataset format
-
-## Contact
-
-For questions or support, please open an issue in this repository or contact [your-email@example.com].
