@@ -9,6 +9,7 @@ The NUSC2SUSC Converter is designed to transform nuScenes data into a format com
 ## Features
 
 Currently supported data conversions:
+
 - LiDAR point clouds
 - Camera images
 - LiDAR poses
@@ -17,13 +18,15 @@ Currently supported data conversions:
 ## Installation
 
 1. Clone this repository:
-   ```
-   git clone https://github.com/your-username/nusc2susc-converter.git
-   cd nusc2susc-converter
+
+   ```sh
+   git clone https://github.com/tendo518/nusc2susc.git
+   cd nusc2susc
    ```
 
 2. Install the required dependencies (a virtual env is suggested):
-   ```
+
+   ```sh
    pip install -r requirements.txt   
    ```
 
@@ -37,7 +40,6 @@ python convert.py --nusc_path /path/to/nuscenes/data --output_path /path/to/outp
 
 Use `python convert.py --help` for more options.
 
-
 Check correctness with:
 
 ```sh
@@ -47,11 +49,11 @@ python visualize.py --scene-root /path/to/converted/data
 ## Roadmap
 
 Future development plans include support for:
-- Radar data (not sure if possible ...)
-- HD map data
-- Ego vehicle poses
-- Camera calibration data
-- Additional metadata and annotations
+
+- [ ] radar 
+- [ ] map conversion
+- [ ] ego pose transformation
+- [ ] Calibration
 
 ## License
 

@@ -1,31 +1,35 @@
+from concurrent.futures import ThreadPoolExecutor
 from os import PathLike
 from pathlib import Path
 
-from PIL.ImageFile import ImageFile
-from nuscenes.nuscenes import NuScenes
-from pyquaternion import Quaternion
 import numpy as np
-from PIL import Image
 import pypcd4 as pypcd
-from utils import Label, LidarPose, PSR, XYZ, LabelObject
-
+from nuscenes.nuscenes import NuScenes
+from PIL import Image
+from PIL.ImageFile import ImageFile
+from pyquaternion import Quaternion
+from scipy.spatial.transform import Rotation as R
+from nuscenes.utils.splits import create_splits_logs
+from utils import PSR, XYZ, Label, LabelObject, LidarPose
+from nuscenes.utils.splits import create_splits_scenes
 
 class SUSCapeConverter:
     def __init__(
         self,
-        nusc_root: PathLike | str = "data/nusc",
-        output_root: PathLike | str = "output/nusc_susc",
+        nusc_path: PathLike | str = "data/nusc",
+        output_path: PathLike | str = "output/nusc_susc",
         nusc_version: str = "v1.0-mini",
-        lidar_name: str = "LIDAR_TOP",
-        split: str = "mini_train",
+        nusc_split: str = "mini_train",
     ) -> None:
-        nusc_root = Path(nusc_root)
-        nusc_susc_root = Path(output_root)
+        nusc_path = Path(nusc_path)
+        nusc_susc_root = Path(output_path)
         nusc_susc_root.mkdir(exist_ok=True, parents=True)
 
-        self.nusc = NuScenes(nusc_version, nusc_root.__fspath__())
+        self.nusc = NuScenes(nusc_version, nusc_path.__fspath__())
         self.nusc_susc_root = nusc_susc_root
-        self.lidar_name = lidar_name
+        self.split = nusc_split
+        
+        self.lidar_name = "LIDAR_TOP"
         self.camera_mappings = {
             "CAM_FRONT": "front",
             "CAM_FRONT_LEFT": "front_left",
@@ -37,9 +41,9 @@ class SUSCapeConverter:
         self.category_mappings = {
             "human.pedestrian.adult": "pedestrian",
             "human.pedestrian.child": "pedestrian",
-            "human.pedestrian.wheelchair": "ignore",
-            "human.pedestrian.stroller": "ignore",
-            "human.pedestrian.personal_mobility": "ignore",
+            # "human.pedestrian.wheelchair": "ignore",
+            # "human.pedestrian.stroller": "ignore",
+            # "human.pedestrian.personal_mobility": "ignore",
             "human.pedestrian.police_officer": "pedestrian",
             "human.pedestrian.construction_worker": "pedestrian",
             "vehicle.car": "car",
@@ -49,26 +53,24 @@ class SUSCapeConverter:
             "vehicle.bus.rigid": "bus",
             "vehicle.truck": "truck",
             "vehicle.construction": "construction_vehicle",
-            "vehicle.emergency.ambulance": "ignore",
-            "vehicle.emergency.police": "ignore",
+            # "vehicle.emergency.ambulance": "ignore",
+            # "vehicle.emergency.police": "ignore",
             "vehicle.trailer": "trailer",
             "movable_object.barrier": "barrier",
         }
 
-        self.split = split
-
+        
     def nusc_to_susc(self):
-        # split_logs = create_splits_logs(self.split, self.nusc)
-        scene_tokens = [s["token"] for s in self.nusc.scene]
-
-        for scene_idx, scene_token in enumerate(scene_tokens):
+        def task(scene_token):
             scene_rec = self.nusc.get("scene", scene_token)
             scene_name = scene_rec["name"]
             print(f"{scene_name} converting")
             first_sample_rec = self.nusc.get("sample", scene_rec["first_sample_token"])
             # last_sample_rec = self.nusc.get("sample", scene_rec["last_sample_token"])
 
-            # Collect all sample tokens in current scene
+            # TODO convert calibration
+
+            # collect all sample tokens in current scene
             sample_tokens = []
             sample_token = first_sample_rec["token"]
             while sample_token:
@@ -76,7 +78,6 @@ class SUSCapeConverter:
                 sample_tokens.append(sample_token)
                 sample_token = sample_rec["next"]
 
-            # TODO multi processing here
             for sample_token in sample_tokens:
                 sample_rec = self.nusc.get("sample", sample_token)
 
@@ -98,6 +99,10 @@ class SUSCapeConverter:
 
                 # Move to the next sample
                 sample_token = sample_rec["next"]
+                
+        scene_tokens = [s['token'] for s in self.nusc.scene if s['name'] in create_splits_scenes()[self.split]]
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            executor.map(task, scene_tokens)
 
     def read_lidar(self, sample_rec):
         lidar_token = sample_rec["data"][self.lidar_name]
@@ -116,14 +121,13 @@ class SUSCapeConverter:
             "rotation": Quaternion(calib_rec["rotation"]),
         }
 
-        # Get vehicle-to-world transformation (ego pose)
+        # vehicle-to-world transformation (ego pose)
         pose_rec = self.nusc.get("ego_pose", lidar_rec["ego_pose_token"])
         vehicle_to_world = {
             "translation": np.array(pose_rec["translation"]),
             "rotation": Quaternion(pose_rec["rotation"]),
         }
 
-        # Compute LiDAR-to-world transformation
         lidar_to_world = {
             "translation": vehicle_to_world["rotation"].rotate(
                 lidar_to_vehicle["translation"]
@@ -162,7 +166,6 @@ class SUSCapeConverter:
                 "rotation": Quaternion(calib_rec["rotation"]),
             }
 
-            # Get camera calibration
             intrinsic = np.array(calib_rec["camera_intrinsic"])
 
             camera_data[cam] = {
@@ -205,7 +208,7 @@ class SUSCapeConverter:
 
             box = self.nusc.get_box(ann_rec["token"])
 
-            box.translate(-full_lidar_translation)
+            box.translate(-full_lidar_translation)  # type: ignore
             box.rotate(full_lidar_rotation.inverse)
 
             # Nuscenes object is in global coordinate
@@ -252,15 +255,11 @@ class SUSCapeConverter:
         cameras_dir.mkdir(exist_ok=True, parents=True)
         label_dir.mkdir(exist_ok=True, parents=True)
 
-        # TODO useless for trajactor
-        # ego_pose_dir = scene_root / "ego_pose"
-
         # lidar
         pc = pypcd.PointCloud.from_xyzi_points(lidar_data["points"][:, :4])
         pc.save(lidar_dir / f"{timestamp}.pcd")
 
         # lidar pose
-        # TODO do we need coordinate defination changes?
         lidar_pose_rot: Quaternion = lidar_data["lidar_to_world"]["rotation"]
         lidar_pose_trans = lidar_data["lidar_to_world"]["translation"]
         lidar_pose_se3 = np.eye(4)
@@ -272,22 +271,21 @@ class SUSCapeConverter:
             ).model_dump_json(indent=2)
             f.write(content)
 
-        # TODO object label
         susc_objects = []
         for obj in object_labels:
             obj_pos = XYZ(
                 x=obj["position"][0], y=obj["position"][1], z=obj["position"][2]
             )
             obj_size = XYZ(x=obj["size"][1], y=obj["size"][2], z=obj["size"][0])
-            rot_q: Quaternion = obj["rotation"]
+            rot = R.from_quat(obj["rotation"].elements, scalar_first=True)
             # obj_rot = XYZ(x=rot_q)
             susc_objects.append(
                 LabelObject(
-                    obj_id=obj["instance_id"],  # FIXME this is a nuscenes token
+                    obj_id=obj["instance_id"],
                     obj_type=obj["category"],
                     psr=PSR(
                         position=obj_pos,
-                        rotation=XYZ(x=0, y=0, z=0),  # FIXME
+                        rotation=XYZ(x=0, y=0, z=rot.as_euler("xyz", False)[2]),
                         scale=obj_size,
                     ),
                 )
@@ -308,5 +306,6 @@ class SUSCapeConverter:
 
 if __name__ == "__main__":
     import tyro
+
     converter = tyro.cli(SUSCapeConverter)
     converter.nusc_to_susc()

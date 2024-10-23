@@ -26,20 +26,18 @@ def log_susc_scene(scene_root: PathLike | str):
         lidar_pose_path = lidar_pose_dir / f"{ts}.json"
         label_path = label_dir / f"{ts}.json"
 
-        # lidar pose
+        # ----------------- lidar pose -----------------
         with open(lidar_pose_path, "r") as f:
             lidar_pose = LidarPose.model_validate_json(f.read()).lidarPose
         lidar_pose = np.array(lidar_pose).reshape(4, 4)
 
-        # lidar
+        # ----------------- lidar -----------------
         pc = pypcd4.PointCloud.from_path(lidar_path).numpy()
-        # Convert lidar points to homogeneous coordinates
         pc_homogeneous = np.hstack((pc[:, :3], np.ones((pc.shape[0], 1))))
-        # Transform to world coordinates
         pc_world = (lidar_pose @ pc_homogeneous.T).T[:, :3]
         rr.log("pointcloud", rr.Points3D(pc_world))
 
-        # label
+        # ----------------- label -----------------
         with open(label_path, "r") as f:
             obj_labels = Label.model_validate_json(f.read())
 
@@ -49,13 +47,10 @@ def log_susc_scene(scene_root: PathLike | str):
             centers = np.array(
                 [obj.psr.position.x, obj.psr.position.y, obj.psr.position.z, 1]
             )
-            # Transform center to world coordinates
             center_world = (lidar_pose @ centers)[:3]
-
             euler_angles = np.array(
                 [obj.psr.rotation.x, obj.psr.rotation.y, obj.psr.rotation.z]
             )
-            # Combine lidar pose rotation with object rotation
             combined_rotation = R.from_matrix(lidar_pose[:3, :3]) * R.from_euler(
                 "xyz", euler_angles
             )
@@ -66,10 +61,7 @@ def log_susc_scene(scene_root: PathLike | str):
                 rr.Boxes3D(
                     sizes=size,
                     centers=center_world,
-                    rotations=rr.RotationAxisAngle(
-                        axis=[0, 0, 1],
-                        angle=yaw,
-                    ),
+                    rotations=rr.RotationAxisAngle(axis=[0, 0, 1], angle=yaw),
                     labels=obj.obj_type,
                 ),
             )
