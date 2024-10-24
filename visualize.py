@@ -35,7 +35,7 @@ def log_susc_scene(scene_root: PathLike | str):
         pc = pypcd4.PointCloud.from_path(lidar_path).numpy()
         pc_homogeneous = np.hstack((pc[:, :3], np.ones((pc.shape[0], 1))))
         pc_world = (lidar_pose @ pc_homogeneous.T).T[:, :3]
-        rr.log("pointcloud", rr.Points3D(pc_world))
+        rr.log("pointcloud", rr.Points3D(pc_world, colors=[255, 255, 255]))
 
         # ----------------- label -----------------
         with open(label_path, "r") as f:

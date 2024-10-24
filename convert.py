@@ -13,6 +13,7 @@ from nuscenes.utils.splits import create_splits_logs
 from utils import PSR, XYZ, Label, LabelObject, LidarPose
 from nuscenes.utils.splits import create_splits_scenes
 
+
 class SUSCapeConverter:
     def __init__(
         self,
@@ -20,6 +21,7 @@ class SUSCapeConverter:
         output_path: PathLike | str = "output/nusc_susc",
         nusc_version: str = "v1.0-mini",
         nusc_split: str = "mini_train",
+        workers: int = 4,
     ) -> None:
         nusc_path = Path(nusc_path)
         nusc_susc_root = Path(output_path)
@@ -28,7 +30,8 @@ class SUSCapeConverter:
         self.nusc = NuScenes(nusc_version, nusc_path.__fspath__())
         self.nusc_susc_root = nusc_susc_root
         self.split = nusc_split
-        
+        self.workers = workers
+
         self.lidar_name = "LIDAR_TOP"
         self.camera_mappings = {
             "CAM_FRONT": "front",
@@ -59,7 +62,6 @@ class SUSCapeConverter:
             "movable_object.barrier": "barrier",
         }
 
-        
     def nusc_to_susc(self):
         def task(scene_token):
             scene_rec = self.nusc.get("scene", scene_token)
@@ -99,9 +101,13 @@ class SUSCapeConverter:
 
                 # Move to the next sample
                 sample_token = sample_rec["next"]
-                
-        scene_tokens = [s['token'] for s in self.nusc.scene if s['name'] in create_splits_scenes()[self.split]]
-        with ThreadPoolExecutor(max_workers=4) as executor:
+
+        scene_tokens = [
+            s["token"]
+            for s in self.nusc.scene
+            if s["name"] in create_splits_scenes()[self.split]
+        ]
+        with ThreadPoolExecutor(max_workers=self.workers) as executor:
             executor.map(task, scene_tokens)
 
     def read_lidar(self, sample_rec):
@@ -276,7 +282,7 @@ class SUSCapeConverter:
             obj_pos = XYZ(
                 x=obj["position"][0], y=obj["position"][1], z=obj["position"][2]
             )
-            obj_size = XYZ(x=obj["size"][1], y=obj["size"][2], z=obj["size"][0])
+            obj_size = XYZ(x=obj["size"][1], y=obj["size"][0], z=obj["size"][2])
             rot = R.from_quat(obj["rotation"].elements, scalar_first=True)
             # obj_rot = XYZ(x=rot_q)
             susc_objects.append(
