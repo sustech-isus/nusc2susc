@@ -7,6 +7,7 @@ requires-python = ">=3.10"
 dependencies = [
     "numpy<2",
     "nuscenes-devkit>=1.1.11",
+    "open3d>=0.18.0",
     "pillow>=11.0.0",
     "pydantic>=2.9.2",
     "pypcd4>=1.1.0",
