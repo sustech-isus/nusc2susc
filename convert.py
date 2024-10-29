@@ -1,4 +1,6 @@
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+import json
 from os import PathLike
 from pathlib import Path
 
@@ -10,7 +12,7 @@ from PIL.ImageFile import ImageFile
 from pyquaternion import Quaternion
 from scipy.spatial.transform import Rotation as R
 from nuscenes.utils.splits import create_splits_logs
-from utils import PSR, XYZ, Label, LabelObject, LidarPose
+from utils import PSR, XYZ, CalibCamera, Label, LabelObject, LidarPose
 from nuscenes.utils.splits import create_splits_scenes
 
 
@@ -18,9 +20,11 @@ class SUSCapeConverter:
     def __init__(
         self,
         nusc_path: PathLike | str = "data/nusc",
-        output_path: PathLike | str = "output/nusc_susc",
+        output_path: PathLike | str = "output/nusc_susc_mini",
         nusc_version: str = "v1.0-mini",
         nusc_split: str = "mini_train",
+        use_aligned_timestamp: bool = True,
+        use_simpler_instance_id: bool = True,
         workers: int = 4,
     ) -> None:
         nusc_path = Path(nusc_path)
@@ -30,6 +34,8 @@ class SUSCapeConverter:
         self.nusc = NuScenes(nusc_version, nusc_path.__fspath__())
         self.nusc_susc_root = nusc_susc_root
         self.split = nusc_split
+        self.use_aligned_timestamp = use_aligned_timestamp
+        self.use_simpler_instance_id = use_simpler_instance_id
         self.workers = workers
 
         self.lidar_name = "LIDAR_TOP"
@@ -42,25 +48,26 @@ class SUSCapeConverter:
             "CAM_BACK_RIGHT": "rear_right",
         }
         self.category_mappings = {
-            "human.pedestrian.adult": "pedestrian",
-            "human.pedestrian.child": "pedestrian",
+            "human.pedestrian.adult": "Pedestrian",
+            "human.pedestrian.child": "Pedestrian",
             # "human.pedestrian.wheelchair": "ignore",
             # "human.pedestrian.stroller": "ignore",
             # "human.pedestrian.personal_mobility": "ignore",
-            "human.pedestrian.police_officer": "pedestrian",
-            "human.pedestrian.construction_worker": "pedestrian",
-            "vehicle.car": "car",
-            "vehicle.motorcycle": "motorcycle",
-            "vehicle.bicycle": "bicycle",
-            "vehicle.bus.bendy": "bus",
-            "vehicle.bus.rigid": "bus",
-            "vehicle.truck": "truck",
-            "vehicle.construction": "construction_vehicle",
-            # "vehicle.emergency.ambulance": "ignore",
-            # "vehicle.emergency.police": "ignore",
-            "vehicle.trailer": "trailer",
-            "movable_object.barrier": "barrier",
+            "human.pedestrian.police_officer": "Pedestrian",
+            "human.pedestrian.construction_worker": "Pedestrian",
+            "vehicle.car": "Vehicle",
+            "vehicle.motorcycle": "Bicycle",
+            "vehicle.bicycle": "Bicycle",
+            "vehicle.bus.bendy": "Vehicle",
+            "vehicle.bus.rigid": "Vehicle",
+            "vehicle.truck": "Vehicle",
+            "vehicle.construction": "Vehicle",
+            "vehicle.emergency.ambulance": "Vehicle",
+            "vehicle.emergency.police": "Vehicle",
+            "vehicle.trailer": "Vehicle",
+            # "movable_object.barrier": "barrier",
         }
+        self.scene2instance_mappings = defaultdict(lambda: {})
 
     def nusc_to_susc(self):
         def task(scene_token):
@@ -75,6 +82,8 @@ class SUSCapeConverter:
             # collect all sample tokens in current scene
             sample_tokens = []
             sample_token = first_sample_rec["token"]
+
+            self.process_and_save_calib(scene_name, first_sample_rec)
             while sample_token:
                 sample_rec = self.nusc.get("sample", sample_token)
                 sample_tokens.append(sample_token)
@@ -84,23 +93,32 @@ class SUSCapeConverter:
                 sample_rec = self.nusc.get("sample", sample_token)
 
                 timestamp = sample_rec["timestamp"]
-
-                lidar_data = self.read_lidar(sample_rec)
-                camera_data = self.read_cameras(sample_rec)
-                object_labels = self.read_object_labels_lidar(sample_rec)
+                if self.use_aligned_timestamp:
+                    timestamp = round(timestamp / 500_000) * 500_000
+                frame_name = str(timestamp / 1_000_000.0)
 
                 # Process and save the data as needed
                 self.process_and_save_single_frame(
                     scene_name,
                     sample_token,
-                    lidar_data,
-                    camera_data,
-                    object_labels,
-                    timestamp,
+                    self.read_lidar(sample_rec),
+                    self.read_cameras(sample_rec),
+                    self.read_object_labels_lidar(sample_rec),
+                    frame_name,
                 )
 
                 # Move to the next sample
                 sample_token = sample_rec["next"]
+
+            scene_instance_mappings = {
+                new_id: nusc_id
+                for nusc_id, new_id in self.scene2instance_mappings[scene_name].items()
+            }
+
+            with open(
+                self.nusc_susc_root / scene_name / "instaceid_mappings.json", "w"
+            ) as f:
+                json.dump(scene_instance_mappings, f)
 
         scene_tokens = [
             s["token"]
@@ -231,11 +249,70 @@ class SUSCapeConverter:
 
         return object_labels
 
-    def process_and_save_calib(self, scene_name):
+    def process_and_save_calib(self, scene_name, first_sample):
         scene_root = self.nusc_susc_root / f"{scene_name}"
 
         calib_dir = scene_root / "calib"
         calib_cameras_dir = calib_dir / "camera"
+        calib_cameras_dir.mkdir(parents=True, exist_ok=True)
+
+        # Get lidar calibration data
+        lidar_data = self.nusc.get("sample_data", first_sample["data"]["LIDAR_TOP"])
+        lidar_calib = self.nusc.get(
+            "calibrated_sensor", lidar_data["calibrated_sensor_token"]
+        )
+
+        # Get lidar-to-vehicle transform
+        lidar_translation = lidar_calib["translation"]
+        lidar_rotation = R.from_quat(lidar_calib["rotation"]).as_matrix()
+
+        # Construct 4x4 vehicle-to-lidar transform
+        vehicle_T_lidar = np.eye(4)
+        vehicle_T_lidar[:3, :3] = lidar_rotation
+        vehicle_T_lidar[:3, 3] = lidar_translation
+
+        for nusc_cam_name, cam_name in self.camera_mappings.items():
+            # Get camera calibration data from nuScenes
+            cam_data = self.nusc.get("sample_data", first_sample["data"][nusc_cam_name])
+            cam_calib = self.nusc.get(
+                "calibrated_sensor", cam_data["calibrated_sensor_token"]
+            )
+
+            # Get intrinsic matrix (3x3)
+            intrinsic = cam_calib["camera_intrinsic"]
+
+            # Get camera-to-vehicle transform
+            cam_translation = cam_calib["translation"]
+            cam_rotation = R.from_quat(cam_calib["rotation"]).as_matrix()
+
+            # Construct 4x4 vehicle-to-camera transform
+            vehicle_T_cam = np.eye(4)
+            vehicle_T_cam[:3, :3] = cam_rotation
+            vehicle_T_cam[:3, 3] = cam_translation
+
+            # Calculate lidar-to-camera transform
+            # lidar_T_cam = vehicle_T_cam @ inv(vehicle_T_lidar)
+            lidar_T_cam = vehicle_T_cam @ np.linalg.inv(vehicle_T_lidar)
+            coord_transform = np.array(
+                [
+                    [-1, 0, 0],  # x = -y
+                    [0, 0, -1],  # y = -z
+                    [0, 1, 0],  # z = x
+                ]
+            )
+            transform_matrix = np.eye(4)
+            transform_matrix[:3, :3] = coord_transform
+            lidar_T_cam = transform_matrix @ lidar_T_cam @ np.linalg.inv(transform_matrix)
+            # Create CalibCamera object
+            cam_calib = CalibCamera(
+                extrinsic=lidar_T_cam.flatten().tolist(),
+                intrinsic=np.array(intrinsic).flatten().tolist(),
+            )
+
+            # Save calibration to file
+            calib_path = calib_cameras_dir / f"{cam_name}.json"
+            with open(calib_path, "w") as f:
+                f.write(cam_calib.model_dump_json(indent=2))
 
     def process_and_save_single_frame(
         self,
@@ -244,16 +321,15 @@ class SUSCapeConverter:
         lidar_data,
         camera_data,
         object_labels,
-        timestamp_milonsecs,
+        frame_name,
     ):
-        timestamp = timestamp_milonsecs / 1_000_000.0
         # print(timestamp / 1_000_000.0)
         # Implement your logic to process and save the data
         # This could involve transforming coordinates, saving to specific formats, etc.
         scene_root = self.nusc_susc_root / f"{scene_name}"
         lidar_dir = scene_root / "lidar"
         lidar_pose_dir = scene_root / "lidar_pose"
-        cameras_dir = scene_root / "cameras"
+        cameras_dir = scene_root / "camera"
         label_dir = scene_root / "label"
 
         lidar_dir.mkdir(exist_ok=True, parents=True)
@@ -261,33 +337,82 @@ class SUSCapeConverter:
         cameras_dir.mkdir(exist_ok=True, parents=True)
         label_dir.mkdir(exist_ok=True, parents=True)
 
-        # lidar
-        pc = pypcd.PointCloud.from_xyzi_points(lidar_data["points"][:, :4])
-        pc.save(lidar_dir / f"{timestamp}.pcd")
+        # 定义坐标转换矩阵
+        coord_transform = np.array(
+            [
+                [-1, 0, 0],  # x = -x
+                [0, -1, 0],  # y = -y
+                [0, 0, 1],  # z = z
+            ]
+        )
+        # # # 点在lidar坐标系下，只需要处理轴变换，不需要负号
+        # point_transform = np.abs(coord_transform)
 
-        # lidar pose
-        lidar_pose_rot: Quaternion = lidar_data["lidar_to_world"]["rotation"]
+        # 1. lidar points
+        points = lidar_data["points"][:, :4].copy()
+
+        xyz_points = points[:, :3]
+        transformed_xyz = (coord_transform @ xyz_points.T).T
+        points[:, :3] = transformed_xyz
+
+        # Save transformed point cloud
+        pc = pypcd.PointCloud.from_xyzi_points(points)
+        pc.save(lidar_dir / f"{frame_name}.pcd")
+
+        # 2. lidar pose transformation
         lidar_pose_trans = lidar_data["lidar_to_world"]["translation"]
+        lidar_pose_rot: Quaternion = lidar_data["lidar_to_world"]["rotation"]
+        original_trans = np.array(lidar_pose_trans)
+        original_rot = lidar_pose_rot.rotation_matrix
+
+        # transform
+        transformed_trans = coord_transform @ original_trans.T
+        transformed_rot = coord_transform @ original_rot @ coord_transform.T
+
         lidar_pose_se3 = np.eye(4)
-        lidar_pose_se3[:3, :3] = lidar_pose_rot.rotation_matrix
-        lidar_pose_se3[:3, 3] = lidar_pose_trans
-        with open(lidar_pose_dir / f"{timestamp}.json", "w") as f:
+        lidar_pose_se3[:3, 3] = transformed_trans
+        lidar_pose_se3[:3, :3] = transformed_rot
+
+        with open(lidar_pose_dir / f"{frame_name}.json", "w") as f:
             content = LidarPose(
                 lidarPose=list(lidar_pose_se3.flatten())
             ).model_dump_json(indent=2)
             f.write(content)
 
+        # 3. Transform objects
         susc_objects = []
         for obj in object_labels:
+            # Transform position
+            original_pos = np.array([obj["position"][0], obj["position"][1], obj["position"][2]])
+            transformed_pos = (coord_transform @ original_pos.T).T
+            # position
             obj_pos = XYZ(
-                x=obj["position"][0], y=obj["position"][1], z=obj["position"][2]
+                x=transformed_pos[0], 
+                y=transformed_pos[1], 
+                z=transformed_pos[2]
             )
+            # size
             obj_size = XYZ(x=obj["size"][1], y=obj["size"][0], z=obj["size"][2])
+            # rot
             rot = R.from_quat(obj["rotation"].elements, scalar_first=True)
+            original_rot_mat = rot.as_matrix()
+            # Transform rotation matrix similar to how we transform lidar pose rotation
+            transformed_rot_mat = coord_transform @ original_rot_mat @ coord_transform.T
+            transformed_rot = R.from_matrix(transformed_rot_mat)
+            
             # obj_rot = XYZ(x=rot_q)
+            nusc_id = obj["instance_id"]
+            if self.use_simpler_instance_id:
+                if nusc_id in self.scene2instance_mappings[scene_name]:
+                    instance_id = self.scene2instance_mappings[scene_name][nusc_id]
+                else:
+                    instance_id = f"{len(self.scene2instance_mappings[scene_name])}"
+                    self.scene2instance_mappings[scene_name][nusc_id] = instance_id
+            else:
+                instance_id = nusc_id
             susc_objects.append(
                 LabelObject(
-                    obj_id=obj["instance_id"],
+                    obj_id=instance_id,
                     obj_type=obj["category"],
                     psr=PSR(
                         position=obj_pos,
@@ -296,18 +421,19 @@ class SUSCapeConverter:
                     ),
                 )
             )
-        with open(label_dir / f"{timestamp}.json", "w") as f:
-            content = Label(frame=f"{timestamp}", objs=susc_objects).model_dump_json(
+        with open(label_dir / f"{frame_name}.json", "w") as f:
+            content = Label(frame=f"{frame_name}", objs=susc_objects).model_dump_json(
                 indent=2
             )
             f.write(content)
+
         # cameras
         for cam in self.camera_mappings.keys():
             cam_dir = cameras_dir / self.camera_mappings[cam]
             cam_dir.mkdir(exist_ok=True)
 
             image: ImageFile = camera_data[cam]["image"]
-            image.save(cam_dir / f"{timestamp}.jpg")
+            image.save(cam_dir / f"{frame_name}.jpg")
 
 
 if __name__ == "__main__":
