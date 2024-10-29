@@ -272,16 +272,13 @@ class SUSCapeConverter:
         vehicle_T_lidar[:3, 3] = lidar_translation
 
         for nusc_cam_name, cam_name in self.camera_mappings.items():
-            # Get camera calibration data from nuScenes
             cam_data = self.nusc.get("sample_data", first_sample["data"][nusc_cam_name])
             cam_calib = self.nusc.get(
                 "calibrated_sensor", cam_data["calibrated_sensor_token"]
             )
 
-            # Get intrinsic matrix (3x3)
             intrinsic = cam_calib["camera_intrinsic"]
 
-            # Get camera-to-vehicle transform
             cam_translation = cam_calib["translation"]
             cam_rotation = R.from_quat(cam_calib["rotation"]).as_matrix()
 
@@ -290,14 +287,12 @@ class SUSCapeConverter:
             vehicle_T_cam[:3, :3] = cam_rotation
             vehicle_T_cam[:3, 3] = cam_translation
 
-            # Calculate lidar-to-camera transform
-            # lidar_T_cam = vehicle_T_cam @ inv(vehicle_T_lidar)
             lidar_T_cam = vehicle_T_cam @ np.linalg.inv(vehicle_T_lidar)
             coord_transform = np.array(
                 [
-                    [-1, 0, 0],  # x = -y
-                    [0, 0, -1],  # y = -z
-                    [0, 1, 0],  # z = x
+                    [0, 0, -1],  # x = -y
+                    [0, 1, 0],  # y = -z
+                    [-1, 0, 0],  # z = x
                 ]
             )
             transform_matrix = np.eye(4)

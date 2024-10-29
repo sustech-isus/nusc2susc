@@ -14,6 +14,7 @@ Currently supported data conversions:
 - Camera images
 - LiDAR poses
 - Object tracking labels
+- Camera Calibration
 
 ## Installation
 
@@ -60,7 +61,6 @@ Future development plans include support for:
 - [ ] radar
 - [ ] map conversion
 - [ ] ego pose transformation
-- [ ] Calibration
 
 ## License
 
